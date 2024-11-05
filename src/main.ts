@@ -19,3 +19,5 @@ button.addEventListener("click", function () {
 // Adds the button to the website
 document.body.appendChild(button);
 document.title = gameName;
+
+//test

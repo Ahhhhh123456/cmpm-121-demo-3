@@ -60,6 +60,27 @@ button {
   transition: border-color 0.25s;
 }
 
+.collect-button {
+  background-color: black;
+  color: white;
+  padding: 5px 10px;
+  border: none;
+  cursor: pointer;
+}
+
+.deposit-button {
+  background-color: darkgreen;
+  color: white;
+  padding: 5px 10px;
+  border: none;
+  cursor: pointer;
+}
+
+/* Optional: Add hover effect */
+.collect-button:hover, .deposit-button:hover {
+  opacity: 0.8;
+}
+
 button:hover {
   border-color: #646cff;
 }

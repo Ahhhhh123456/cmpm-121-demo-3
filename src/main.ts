@@ -1,6 +1,7 @@
 // Import necessary modules and types
 import leaflet, { LatLng } from "leaflet";
 import luck from "./luck.ts";
+import { Board, Cell } from "./board.ts"; // Import the Board class and Cell interface
 
 // Style sheets
 import "leaflet/dist/leaflet.css";
@@ -9,7 +10,7 @@ import "./style.css";
 // Fix missing marker images
 import "./leafletWorkaround.ts";
 
-// Location of our classroom (as identified on Google Maps)
+// Location of our classroom
 const OAKES_CLASSROOM: LatLng = leaflet.latLng(
   36.98949379578401,
   -122.06277128548504,
@@ -18,7 +19,7 @@ const OAKES_CLASSROOM: LatLng = leaflet.latLng(
 // Tunable gameplay parameters
 const GAMEPLAY_ZOOM_LEVEL = 19;
 
-// Create the map (element with id "map" is defined in index.html)
+// Create the map
 const map = leaflet.map(document.getElementById("map")!, {
   center: OAKES_CLASSROOM,
   zoom: GAMEPLAY_ZOOM_LEVEL,
@@ -35,21 +36,40 @@ leaflet.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>',
 }).addTo(map);
 
+// Initialize the Board
+const tileWidth = 0.001;
+const tileVisibilityRadius = 3;
+const board = new Board(tileWidth, tileVisibilityRadius);
+
 // State to track player's coins
 let playerCoins = 0;
 
-// Cache locations structure
-const cacheLocations: Array<{ location: LatLng; coins: number }> = [];
+// Define structures for Coin and Cache
+interface Coin {
+  id: string;
+  originatingCacheId: string;
+}
 
-// Function to generate cache locations
+interface Cache {
+  cell: Cell;
+  coins: Coin[];
+  id: string;
+}
+
+// Cache locations structure
+const cacheLocations: Cache[] = [];
+
+// Generate cache locations using Board
 function initializeCacheLocations(
   center: LatLng,
   numCaches: number,
   radius: number,
 ) {
   for (let i = 0; i < numCaches; i++) {
-    const angle = 2 * Math.PI * luck(`cache-${i}-angle`);
-    const distance = radius * luck(`cache-${i}-distance`);
+    const cacheId = `cache-${i}`;
+
+    const angle = 2 * Math.PI * luck(`${cacheId}-angle`);
+    const distance = radius * luck(`${cacheId}-distance`);
     const offsetLat = (distance * Math.cos(angle)) / 111139;
     const offsetLng = (distance * Math.sin(angle)) /
       (111139 * Math.cos(center.lat * Math.PI / 180));
@@ -58,15 +78,24 @@ function initializeCacheLocations(
       center.lat + offsetLat,
       center.lng + offsetLng,
     );
-    const cacheCoins = generateCoins(cacheLocation.lat, cacheLocation.lng);
+    const cell = board.getCellForPoint(cacheLocation);
 
-    cacheLocations.push({ location: cacheLocation, coins: cacheCoins });
+    const numCoins = generateNumberOfCoins(cacheId);
+    const coins: Coin[] = [];
+    for (let j = 0; j < numCoins; j++) {
+      const coinId = `${cell.i}:${cell.j}#${j}`; // Compact coin ID
+      coins.push({
+        id: coinId,
+        originatingCacheId: cacheId,
+      });
+    }
+
+    cacheLocations.push({ cell, coins, id: cacheId });
   }
 }
 
-// Function to generate a number of coins based on location
-function generateCoins(lat: number, lng: number): number {
-  const baseKey = `${lat},${lng},coins`;
+function generateNumberOfCoins(cacheId: string): number {
+  const baseKey = `${cacheId},coins`;
   return Math.floor((luck(baseKey) * 10) + 1);
 }
 
@@ -78,14 +107,13 @@ playerMarker.bindTooltip("Player's starting location").openTooltip();
 function handleCollect(index: number) {
   const cache = cacheLocations[index];
 
-  // Check if there are coins to collect
-  if (cache.coins > 0) {
+  if (cache.coins.length > 0) {
     playerCoins++;
-    cache.coins--; // Decrease coins in the cache
+    const collectedCoin = cache.coins.pop(); // Remove coin from the cache
     alert(
-      `Collected a coin. Player now has ${playerCoins} coins. Cache now has ${cache.coins} coins.`,
+      `Collected a coin with ID ${collectedCoin?.id}. Player now has ${playerCoins} coins.`,
     );
-    updatePopup(index); // Update popup to reflect changes
+    updatePopup(index);
   } else {
     alert("No coins left to collect in this cache!");
   }
@@ -95,40 +123,55 @@ function handleCollect(index: number) {
 function handleDeposit(index: number) {
   if (playerCoins > 0) {
     const cache = cacheLocations[index];
+    const depositedCoin: Coin = {
+      id: `cache-${index}-coin-${cache.coins.length}`,
+      originatingCacheId: cache.id,
+    };
     playerCoins--;
-    cache.coins++; // Increase coins in the cache
+    cache.coins.push(depositedCoin); // Increase coins in the cache
     alert(
-      `Deposited a coin. Player now has ${playerCoins} coins. Cache now has ${cache.coins} coins.`,
+      `Deposited a coin. Player now has ${playerCoins} coins. Cache now has ${cache.coins.length} coins.`,
     );
-    updatePopup(index); // Update popup to reflect changes
+    updatePopup(index);
   } else {
     alert("No coins available to deposit!");
   }
 }
 
-// Add buttons and information to cache popups
-// Modify the updatePopup function for interactive popups
+// Update the popup and rebind it to the marker
 function updatePopup(index: number) {
   const cache = cacheLocations[index];
-  const marker = leaflet.marker(cache.location).addTo(map);
+  const cacheBounds = board.getCellBounds(cache.cell);
 
-  // HTML for the popup with placeholder buttons
+  // Remove only cache-associated markers
+  map.eachLayer((layer: L.Layer) => {
+    if (layer instanceof leaflet.Marker && layer !== playerMarker) {
+      const marker = layer as leaflet.Marker;
+      if (cacheBounds.getCenter().equals(marker.getLatLng())) {
+        map.removeLayer(marker);
+      }
+    }
+  });
+
+  const marker = leaflet.marker(cacheBounds.getCenter()).addTo(map);
+
+  // Generate updated popup content
   const popupContent = document.createElement("div");
   popupContent.innerHTML = `
-    <div>Cache with ${cache.coins} coins</div>
+    <div>Cache with ${cache.coins.length} coins</div>
     <button id="collect-btn-${index}" class="collect-button">Collect</button>
     <button id="deposit-btn-${index}" class="deposit-button">Deposit</button>
   `;
 
-  // Attach popup to marker without opening it
+  // Rebind popup content to the marker
   marker.bindPopup(popupContent);
 
-  // Add click event to open the popup when marker is clicked
-  marker.on("click", function () {
+  // Ensure the popup opens when the marker is clicked
+  marker.on("click", () => {
     marker.openPopup();
   });
 
-  // Add event listeners for the buttons within the popup content
+  // Add event listeners for buttons
   const collectButton = popupContent.querySelector(
     `#collect-btn-${index}`,
   ) as HTMLElement;
@@ -136,8 +179,15 @@ function updatePopup(index: number) {
     `#deposit-btn-${index}`,
   ) as HTMLElement;
 
-  collectButton.addEventListener("click", () => handleCollect(index));
-  depositButton.addEventListener("click", () => handleDeposit(index));
+  collectButton.addEventListener("click", () => {
+    handleCollect(index);
+    updatePopup(index);
+  });
+
+  depositButton.addEventListener("click", () => {
+    handleDeposit(index);
+    updatePopup(index);
+  });
 }
 
 // Initialize caches

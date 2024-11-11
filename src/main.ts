@@ -56,6 +56,24 @@ interface Cache {
   id: string;
 }
 
+interface CacheData {
+  id: string;
+  coins: Coin[];
+  cell: Cell; // Assuming Cell is accurately imported from './board.ts'
+}
+
+interface GameState {
+  playerCoins: number;
+  playerPosition: Location;
+  cacheLocations: CacheData[];
+  movementHistory: Location[];
+}
+
+interface Location {
+  lat: number;
+  lng: number;
+}
+
 // Cache locations structure
 const cacheLocations: Cache[] = [];
 
@@ -263,18 +281,23 @@ function updatePopup(index: number) {
 
   const marker = leaflet.marker(cacheBounds.getCenter()).addTo(map);
 
-  // Generate updated popup content
+  // Create popup content with clickable coin identifiers
   const popupContent = document.createElement("div");
   popupContent.innerHTML = `
     <div>Cache with ${cache.coins.length} coins</div>
+    ${
+    cache.coins.map((coin) =>
+      `<div class="coin-id" data-cache-id="${coin.originatingCacheId}">${coin.id}</div>`
+    ).join("")
+  }
     <button id="collect-btn-${index}" class="collect-button">Collect</button>
     <button id="deposit-btn-${index}" class="deposit-button">Deposit</button>
   `;
 
-  // Rebind popup content to the marker
+  // Rebind the updated content to the marker
   marker.bindPopup(popupContent);
 
-  // Ensure the popup opens when the marker is clicked
+  // Open the popup when marker is clicked
   marker.on("click", () => {
     marker.openPopup();
   });
@@ -290,11 +313,25 @@ function updatePopup(index: number) {
   collectButton.addEventListener("click", () => {
     handleCollect(index);
     updatePopup(index);
+    saveGameState();
   });
 
   depositButton.addEventListener("click", () => {
     handleDeposit(index);
     updatePopup(index);
+    saveGameState();
+  });
+
+  // Add click event for each coin identifier to recentre map on coin’s home cache
+  const coinIdentifiers = popupContent.querySelectorAll(
+    ".coin-id",
+  ) as NodeListOf<HTMLElement>;
+  coinIdentifiers.forEach((el) => {
+    el.addEventListener("click", () => {
+      const cacheId = el.getAttribute("data-cache-id")!;
+      centerMapOnCache(cacheId);
+      saveGameState();
+    });
   });
 }
 
@@ -344,6 +381,10 @@ function movePlayer(direction: "north" | "south" | "east" | "west") {
   // Update the player marker's position
   playerMarker.setLatLng(playerLocation);
   updateCacheLocations();
+
+  // Update the movement history and draw the polyline
+  updateMovementHistory(playerLocation);
+  saveGameState(); // Save state after moving
 }
 
 updateCacheLocations();
@@ -365,6 +406,180 @@ document.getElementById("west")!.addEventListener(
   "click",
   () => movePlayer("west"),
 );
+
+// Declare a variable to track whether geolocation is active
+let geolocationActive = false;
+
+// Function to handle geolocation updates
+function handleGeolocationUpdate(position: GeolocationPosition) {
+  const { latitude, longitude } = position.coords;
+  playerLocation = leaflet.latLng(latitude, longitude);
+
+  // Update the player marker's position
+  playerMarker.setLatLng(playerLocation);
+
+  // Center the map on the new player location
+  map.setView(playerLocation, GAMEPLAY_ZOOM_LEVEL);
+
+  // Update visible caches
+  updateCacheLocations();
+}
+
+// Function to toggle geolocation tracking
+function toggleGeolocation() {
+  if (geolocationActive) {
+    // If geolocation is active, stop watching the position
+    geolocationActive = false;
+    alert("Geolocation tracking disabled.");
+  } else {
+    // Request current position and keep watching
+    if (navigator.geolocation) {
+      geolocationActive = true;
+      alert("Geolocation tracking enabled.");
+
+      navigator.geolocation.watchPosition(handleGeolocationUpdate, (error) => {
+        console.error("Geolocation error: ", error);
+      });
+    } else {
+      alert("Geolocation is not supported by your browser.");
+    }
+  }
+}
+
+const movementHistory: LatLng[] = []; // Array to keep track of the player's position history
+let movementPolyline: leaflet.Polyline; // The polyline to display the player's path on the map
+
+function resetGame() {
+  const confirmReset = globalThis.confirm(
+    "Are you sure you want to erase your game state and reset all progress?",
+  );
+
+  if (confirmReset) {
+    playerCoins = 0;
+    cacheLocations.length = 0; // Clear all existing cache locations
+
+    // Remove all layers besides the player's marker
+    map.eachLayer((layer: L.Layer) => {
+      if (layer instanceof leaflet.Marker && layer !== playerMarker) {
+        map.removeLayer(layer);
+      } else if (layer instanceof leaflet.Polyline) {
+        map.removeLayer(layer);
+      }
+    });
+
+    // Re-initialize cache locations
+    initializeCacheLocations(OAKES_CLASSROOM, 5, 100);
+
+    // Reset player position
+    playerLocation = OAKES_CLASSROOM;
+    playerMarker.setLatLng(playerLocation);
+    map.setView(playerLocation, GAMEPLAY_ZOOM_LEVEL);
+
+    // Clear movement history
+    movementHistory.length = 0;
+
+    // Optionally clear persistent state storage
+    localStorage.removeItem("gameState");
+
+    // Update the map with new cache locations
+    cacheLocations.forEach((_, index) => {
+      updatePopup(index);
+    });
+
+    alert(
+      "Game has been reset. All coins are returned, and history is cleared.",
+    );
+  } else {
+    alert("Game reset canceled.");
+  }
+}
+
+function updateMovementHistory(newPosition: LatLng) {
+  movementHistory.push(newPosition);
+
+  // Remove the previous polyline from the map, if it exists
+  if (movementPolyline) {
+    map.removeLayer(movementPolyline);
+  }
+
+  // Create a new polyline with the updated movement history
+  movementPolyline = leaflet.polyline(movementHistory, { color: "blue" }).addTo(
+    map,
+  );
+}
+
+function centerMapOnCache(cacheId: string) {
+  const cache = cacheLocations.find((cache) => cache.id === cacheId);
+  if (cache) {
+    const cacheCenter = board.getCellBounds(cache.cell).getCenter();
+    map.setView(cacheCenter, GAMEPLAY_ZOOM_LEVEL);
+  }
+}
+
+function saveGameState() {
+  const gameState = {
+    playerCoins: playerCoins,
+    playerPosition: { lat: playerLocation.lat, lng: playerLocation.lng },
+    cacheLocations: cacheLocations.map((cache) => ({
+      id: cache.id,
+      coins: cache.coins,
+      cell: cache.cell,
+    })),
+    movementHistory: movementHistory.map((location) => ({
+      lat: location.lat,
+      lng: location.lng,
+    })),
+  };
+  localStorage.setItem("gameState", JSON.stringify(gameState));
+}
+
+function loadGameState() {
+  const savedState = localStorage.getItem("gameState");
+  if (savedState) {
+    const gameState: GameState = JSON.parse(savedState);
+
+    // Restore player's coins count
+    playerCoins = gameState.playerCoins || 0;
+
+    // Restore player location
+    playerLocation = leaflet.latLng(
+      gameState.playerPosition.lat,
+      gameState.playerPosition.lng,
+    );
+    playerMarker.setLatLng(playerLocation);
+    map.setView(playerLocation, GAMEPLAY_ZOOM_LEVEL);
+
+    // Restore cache locations
+    cacheLocations.length = 0; // Clear any existing caches
+    gameState.cacheLocations.forEach((cacheData: CacheData) => {
+      cacheLocations.push({
+        id: cacheData.id,
+        coins: cacheData.coins,
+        cell: cacheData.cell,
+      });
+    });
+
+    updateCacheLocations(); // Update cache visibility based on player location
+
+    // Restore the movement history
+    movementHistory.length = 0; // Clear existing movement history
+    gameState.movementHistory.forEach((location: Location) => {
+      movementHistory.push(leaflet.latLng(location.lat, location.lng));
+    });
+    if (movementHistory.length > 0) {
+      movementPolyline = leaflet.polyline(movementHistory, { color: "blue" })
+        .addTo(map);
+    }
+  }
+}
+
+loadGameState(); // Load the game state from local storage
+
+// Attach event listener for the reset game button
+document.getElementById("reset")!.addEventListener("click", resetGame);
+
+// Attach event listener for the geolocation toggle button
+document.getElementById("sensor")!.addEventListener("click", toggleGeolocation);
 
 const gameName = "Jason's Game :)";
 document.title = gameName;

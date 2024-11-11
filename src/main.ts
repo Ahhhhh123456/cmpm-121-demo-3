@@ -94,6 +94,114 @@ function initializeCacheLocations(
   }
 }
 
+const CACHE_VISIBILITY_RADIUS = 0.005; // Adjust this based on preferred vicinity
+
+function isCacheVisible(
+  cacheLocation: LatLng,
+  playerPosition: LatLng,
+): boolean {
+  const distanceLat = (cacheLocation.lat - playerPosition.lat) * 111139;
+  const distanceLng = (cacheLocation.lng - playerPosition.lng) *
+    (111139 * Math.cos(playerPosition.lat * Math.PI / 180));
+  const distance = Math.sqrt(distanceLat ** 2 + distanceLng ** 2); // Approximate distance in meters
+  return distance <= CACHE_VISIBILITY_RADIUS;
+}
+
+interface Momento<T> {
+  toMomento(): T;
+  fromMomento(momento: T): void;
+}
+
+class Geocache implements Momento<string> {
+  i: number;
+  j: number;
+  numCoins: number;
+
+  constructor(i: number, j: number, numCoins: number) {
+    this.i = i;
+    this.j = j;
+    this.numCoins = numCoins;
+  }
+
+  toMomento() {
+    return `${this.i},${this.j},${this.numCoins}`;
+  }
+
+  fromMomento(momento: string) {
+    const [i, j, numCoins] = momento.split(",").map(Number);
+    this.i = i;
+    this.j = j;
+    this.numCoins = numCoins;
+  }
+}
+
+// Dictionary to store mementos for each cache location
+const geocacheMementos: { [key: string]: string } = {};
+
+// Modify the updateCacheLocations function to use the Memento pattern
+function updateCacheLocations() {
+  cacheLocations.forEach((cache) => {
+    // Save the current state of each cache item using its coordinates (i, j) as the key
+    const key = `${cache.cell.i},${cache.cell.j}`;
+    geocacheMementos[key] = new Geocache(
+      cache.cell.i,
+      cache.cell.j,
+      cache.coins.length,
+    ).toMomento();
+  });
+
+  cacheLocations.length = 0; // Clear existing cache locations
+  map.eachLayer((layer: L.Layer) => {
+    if (layer instanceof leaflet.Marker && layer !== playerMarker) {
+      map.removeLayer(layer); // Remove old markers
+    }
+  });
+
+  // Generate new caches within visibility radius
+  // Ensure to check mementos first for existing state
+  for (let i = 0; i < 5; i++) {
+    const cacheId = `cache-${i}`;
+
+    const angle = 2 * Math.PI * luck(`${cacheId}-angle`);
+    const distance = CACHE_VISIBILITY_RADIUS * luck(`${cacheId}-distance`);
+    const offsetLat = (distance * Math.cos(angle)) / 111139;
+    const offsetLng = (distance * Math.sin(angle)) /
+      (111139 * Math.cos(playerLocation.lat * Math.PI / 180));
+
+    const cacheLocation = leaflet.latLng(
+      playerLocation.lat + offsetLat,
+      playerLocation.lng + offsetLng,
+    );
+
+    if (isCacheVisible(cacheLocation, playerLocation)) {
+      const cell = board.getCellForPoint(cacheLocation);
+      const key = `${cell.i},${cell.j}`;
+      let numCoins = 0;
+
+      if (geocacheMementos[key]) {
+        // Restore the state if it exists
+        const geocache = new Geocache(cell.i, cell.j, 0);
+        geocache.fromMomento(geocacheMementos[key]);
+        numCoins = geocache.numCoins;
+      } else {
+        numCoins = generateNumberOfCoins(cacheId);
+      }
+
+      const coins: Coin[] = [];
+      for (let j = 0; j < numCoins; j++) {
+        const coinId = `${cell.i}:${cell.j}#${j}`;
+        coins.push({
+          id: coinId,
+          originatingCacheId: cacheId,
+        });
+      }
+
+      cacheLocations.push({ cell, coins, id: cacheId });
+      updatePopup(cacheLocations.length - 1);
+    }
+  }
+}
+
 function generateNumberOfCoins(cacheId: string): number {
   const baseKey = `${cacheId},coins`;
   return Math.floor((luck(baseKey) * 10) + 1);
@@ -197,6 +305,66 @@ initializeCacheLocations(OAKES_CLASSROOM, 5, 100);
 cacheLocations.forEach((_, index) => {
   updatePopup(index);
 });
+
+// State to track player's current location
+let playerLocation: LatLng = OAKES_CLASSROOM;
+
+// Movement parameters
+const MOVE_DISTANCE = 0.0001; // You can adjust this value to control the movement distance
+
+// Movement function
+function movePlayer(direction: "north" | "south" | "east" | "west") {
+  switch (direction) {
+    case "north":
+      playerLocation = leaflet.latLng(
+        playerLocation.lat + MOVE_DISTANCE,
+        playerLocation.lng,
+      );
+      break;
+    case "south":
+      playerLocation = leaflet.latLng(
+        playerLocation.lat - MOVE_DISTANCE,
+        playerLocation.lng,
+      );
+      break;
+    case "east":
+      playerLocation = leaflet.latLng(
+        playerLocation.lat,
+        playerLocation.lng + MOVE_DISTANCE,
+      );
+      break;
+    case "west":
+      playerLocation = leaflet.latLng(
+        playerLocation.lat,
+        playerLocation.lng - MOVE_DISTANCE,
+      );
+      break;
+  }
+
+  // Update the player marker's position
+  playerMarker.setLatLng(playerLocation);
+  updateCacheLocations();
+}
+
+updateCacheLocations();
+
+// Attach event listeners
+document.getElementById("north")!.addEventListener(
+  "click",
+  () => movePlayer("north"),
+);
+document.getElementById("south")!.addEventListener(
+  "click",
+  () => movePlayer("south"),
+);
+document.getElementById("east")!.addEventListener(
+  "click",
+  () => movePlayer("east"),
+);
+document.getElementById("west")!.addEventListener(
+  "click",
+  () => movePlayer("west"),
+);
 
 const gameName = "Jason's Game :)";
 document.title = gameName;

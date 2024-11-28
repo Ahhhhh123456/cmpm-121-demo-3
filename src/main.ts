@@ -156,10 +156,8 @@ class Geocache implements Momento<string> {
 // Dictionary to store mementos for each cache location
 const geocacheMementos: { [key: string]: string } = {};
 
-// Modify the updateCacheLocations function to use the Memento pattern
-function updateCacheLocations() {
+function syncCacheWithMementos() {
   cacheLocations.forEach((cache) => {
-    // Save the current state of each cache item using its coordinates (i, j) as the key
     const key = `${cache.cell.i},${cache.cell.j}`;
     geocacheMementos[key] = new Geocache(
       cache.cell.i,
@@ -168,36 +166,39 @@ function updateCacheLocations() {
     ).toMomento();
   });
 
-  cacheLocations.length = 0; // Clear existing cache locations
+  // Clear the cache locations array for regeneration
+  cacheLocations.length = 0;
+}
+
+function updateMapLayers() {
   map.eachLayer((layer: L.Layer) => {
     if (layer instanceof leaflet.Marker && layer !== playerMarker) {
-      map.removeLayer(layer); // Remove old markers
+      map.removeLayer(layer); // Remove old cache markers
     }
   });
+}
 
-  // Generate new caches within visibility radius
-  // Ensure to check mementos first for existing state
+function generateCacheLocations(playerPosition: LatLng) {
   for (let i = 0; i < 5; i++) {
     const cacheId = `cache-${i}`;
-
     const angle = 2 * Math.PI * luck(`${cacheId}-angle`);
     const distance = CACHE_VISIBILITY_RADIUS * luck(`${cacheId}-distance`);
     const offsetLat = (distance * Math.cos(angle)) / 111139;
     const offsetLng = (distance * Math.sin(angle)) /
-      (111139 * Math.cos(playerLocation.lat * Math.PI / 180));
+      (111139 * Math.cos(playerPosition.lat * Math.PI / 180));
 
     const cacheLocation = leaflet.latLng(
-      playerLocation.lat + offsetLat,
-      playerLocation.lng + offsetLng,
+      playerPosition.lat + offsetLat,
+      playerPosition.lng + offsetLng,
     );
 
-    if (isCacheVisible(cacheLocation, playerLocation)) {
+    if (isCacheVisible(cacheLocation, playerPosition)) {
       const cell = board.getCellForPoint(cacheLocation);
       const key = `${cell.i},${cell.j}`;
       let numCoins = 0;
 
       if (geocacheMementos[key]) {
-        // Restore the state if it exists
+        // Restore state from the memento
         const geocache = new Geocache(cell.i, cell.j, 0);
         geocache.fromMomento(geocacheMementos[key]);
         numCoins = geocache.numCoins;
@@ -214,10 +215,22 @@ function updateCacheLocations() {
         });
       }
 
+      // Update cache locations and set popup
       cacheLocations.push({ cell, coins, id: cacheId });
       updatePopup(cacheLocations.length - 1);
     }
   }
+}
+
+function updateCacheLocations() {
+  // Step 1: Synchronize cache state with mementos
+  syncCacheWithMementos();
+
+  // Step 2: Update layers on the map
+  updateMapLayers();
+
+  // Step 3: Generate caches based on player position
+  generateCacheLocations(playerLocation);
 }
 
 function generateNumberOfCoins(cacheId: string): number {
@@ -264,66 +277,64 @@ function handleDeposit(index: number) {
   }
 }
 
-// Update the popup and rebind it to the marker
-function updatePopup(index: number) {
-  const cache = cacheLocations[index];
-  const cacheBounds = board.getCellBounds(cache.cell);
-
-  // Remove only cache-associated markers
-  map.eachLayer((layer: L.Layer) => {
-    if (layer instanceof leaflet.Marker && layer !== playerMarker) {
-      const marker = layer as leaflet.Marker;
-      if (cacheBounds.getCenter().equals(marker.getLatLng())) {
-        map.removeLayer(marker);
-      }
-    }
-  });
-
-  const marker = leaflet.marker(cacheBounds.getCenter()).addTo(map);
-
-  // Create popup content with clickable coin identifiers
+function generatePopupContent(cache: Cache, index: number): HTMLElement {
   const popupContent = document.createElement("div");
+
   popupContent.innerHTML = `
     <div>Cache with ${cache.coins.length} coins</div>
     ${
-    cache.coins.map((coin) =>
-      `<div class="coin-id" data-cache-id="${coin.originatingCacheId}">${coin.id}</div>`
-    ).join("")
-  }
+      cache.coins.map(
+        (coin) =>
+          `<div class="coin-id" data-cache-id="${coin.originatingCacheId}">
+            ${coin.id}
+          </div>`,
+      ).join("")
+    }
     <button id="collect-btn-${index}" class="collect-button">Collect</button>
     <button id="deposit-btn-${index}" class="deposit-button">Deposit</button>
   `;
 
-  // Rebind the updated content to the marker
-  marker.bindPopup(popupContent);
+  return popupContent;
+}
 
-  // Open the popup when marker is clicked
-  marker.on("click", () => {
-    marker.openPopup();
+function updateCacheMarker(cache: Cache): leaflet.Marker {
+  const cacheBounds = board.getCellBounds(cache.cell);
+
+  // Remove any existing markers at this cache location
+  map.eachLayer((layer: L.Layer) => {
+    if (layer instanceof leaflet.Marker && cacheBounds.getCenter().equals(layer.getLatLng())) {
+      map.removeLayer(layer);
+    }
   });
 
-  // Add event listeners for buttons
-  const collectButton = popupContent.querySelector(
+  // Add a new marker for this cache
+  const marker = leaflet.marker(cacheBounds.getCenter()).addTo(map);
+  return marker;
+}
+
+function bindPopupEvents(content: HTMLElement, index: number): void {
+  // Bind the Collect button
+  const collectButton = content.querySelector(
     `#collect-btn-${index}`,
   ) as HTMLElement;
-  const depositButton = popupContent.querySelector(
-    `#deposit-btn-${index}`,
-  ) as HTMLElement;
-
-  collectButton.addEventListener("click", () => {
+  collectButton?.addEventListener("click", () => {
     handleCollect(index);
     updatePopup(index);
     saveGameState();
   });
 
-  depositButton.addEventListener("click", () => {
+  // Bind the Deposit button
+  const depositButton = content.querySelector(
+    `#deposit-btn-${index}`,
+  ) as HTMLElement;
+  depositButton?.addEventListener("click", () => {
     handleDeposit(index);
     updatePopup(index);
     saveGameState();
   });
 
-  // Add click event for each coin identifier to recentre map on coin’s home cache
-  const coinIdentifiers = popupContent.querySelectorAll(
+  // Bind events for coin ID clicks
+  const coinIdentifiers = content.querySelectorAll(
     ".coin-id",
   ) as NodeListOf<HTMLElement>;
   coinIdentifiers.forEach((el) => {
@@ -332,6 +343,28 @@ function updatePopup(index: number) {
       centerMapOnCache(cacheId);
       saveGameState();
     });
+  });
+}
+
+// Update the popup and rebind it to the marker
+function updatePopup(index: number): void {
+  const cache = cacheLocations[index];
+
+  // Step 1: Update the marker on the map for this cache
+  const marker = updateCacheMarker(cache);
+
+  // Step 2: Create popup content
+  const popupContent = generatePopupContent(cache, index);
+
+  // Step 3: Attach the popup content to the marker
+  marker.bindPopup(popupContent);
+
+  // Step 4: Bind events to popup buttons and elements
+  bindPopupEvents(popupContent, index);
+
+  // Open the popup when the marker is clicked
+  marker.on("click", () => {
+    marker.openPopup();
   });
 }
 
@@ -349,8 +382,7 @@ let playerLocation: LatLng = OAKES_CLASSROOM;
 // Movement parameters
 const MOVE_DISTANCE = 0.0001; // You can adjust this value to control the movement distance
 
-// Movement function
-function movePlayer(direction: "north" | "south" | "east" | "west") {
+function updatePlayerPosition(direction: "north" | "south" | "east" | "west") {
   switch (direction) {
     case "north":
       playerLocation = leaflet.latLng(
@@ -377,6 +409,33 @@ function movePlayer(direction: "north" | "south" | "east" | "west") {
       );
       break;
   }
+}
+
+function updatePlayerMarker() {
+  playerMarker.setLatLng(playerLocation);
+}
+
+function updateCachesForPlayer() {
+  updateCacheLocations();
+}
+
+// Movement function
+function movePlayer(direction: "north" | "south" | "east" | "west") {
+  // Step 1: Update the player's position
+  updatePlayerPosition(direction);
+
+  // Step 2: Update the player marker on the map
+  updatePlayerMarker();
+
+  // Step 3: Update cache visibility and map layers for the new position
+  updateCachesForPlayer();
+
+  // Step 4: Track movement history and update the polyline
+  updateMovementHistory(playerLocation);
+
+  // Step 5: Persist the game state
+  saveGameState();
+
 
   // Update the player marker's position
   playerMarker.setLatLng(playerLocation);

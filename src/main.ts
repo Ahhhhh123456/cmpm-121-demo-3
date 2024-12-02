@@ -171,7 +171,7 @@ function syncCacheWithMementos() {
 }
 
 function updateMapLayers() {
-  map.eachLayer((layer: L.Layer) => {
+  map.eachLayer((layer: leaflet.Layer) => {
     if (layer instanceof leaflet.Marker && layer !== playerMarker) {
       map.removeLayer(layer); // Remove old cache markers
     }
@@ -301,7 +301,7 @@ function updateCacheMarker(cache: Cache): leaflet.Marker {
   const cacheBounds = board.getCellBounds(cache.cell);
 
   // Remove any existing markers at this cache location
-  map.eachLayer((layer: L.Layer) => {
+  map.eachLayer((layer: leaflet.Layer) => {
     if (layer instanceof leaflet.Marker && cacheBounds.getCenter().equals(layer.getLatLng())) {
       map.removeLayer(layer);
     }
@@ -518,7 +518,7 @@ function resetGame() {
     cacheLocations.length = 0; // Clear all existing cache locations
 
     // Remove all layers besides the player's marker
-    map.eachLayer((layer: L.Layer) => {
+    map.eachLayer((layer: leaflet.Layer) => {
       if (layer instanceof leaflet.Marker && layer !== playerMarker) {
         map.removeLayer(layer);
       } else if (layer instanceof leaflet.Polyline) {
